@@ -1,0 +1,96 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  generateName: dyk-test-argo-workflow-
+spec:
+  schedule: "*/5 * * * *"
+  timezone: "America/Los_Angeles"   # Default to local machine timezone
+  startingDeadlineSeconds: 0
+  concurrencyPolicy: "Replace"      # Default to "Allow"
+  successfulJobsHistoryLimit: 4     # Default 3
+  failedJobsHistoryLimit: 4         # Default 1
+  suspend: false                    # Set to "true" to suspend scheduling
+  workflowSpec:
+    entrypoint: spark-flow
+    templates:
+    - name: mds
+      container: 
+        image: alpine:3.7
+        command: [echo, "mds"]
+    - name: bulk-profile-update-importer    
+      container: 
+        image: alpine:3.7
+        command: [echo, "bulk profile updated importer"]
+    - name: spark
+      dependencies: [mds, bulk-profile-update-importer]    
+      resource:
+        action: create
+        # successCondition and failureCondition are optional expressions which are
+        # evaluated upon every update of the resource. If failureCondition is ever
+        # evaluated to true, the step is considered failed. Likewise, if successCondition
+        # is ever evaluated to true the step is considered successful. It uses kubernetes
+        # label selection syntax and can be applied against any field of the resource
+        # (not just labels). Multiple AND conditions can be represented by comma
+        # delimited expressions. For more details, see:
+        # https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+        successCondition: status.applicationState.state == COMPLETED
+        failureCondition: status.applicationState.state == FAILED
+        manifest: |
+          apiVersion: "sparkoperator.k8s.io/v1beta1"
+          kind: SparkApplication
+          metadata:
+            generateName: dyk-test-spark-pi-example-
+            namespace: test
+          spec:
+            type: Scala
+            mode: cluster
+            image: "gcr.io/spark-operator/spark:v2.4.5"
+            imagePullPolicy: Always
+            mainClass: org.apache.spark.examples.SparkPi
+            mainApplicationFile: "local:///opt/spark/examples/jars/spark-examples_2.11-2.4.5.jar"
+            sparkVersion: "2.4.5"
+            restartPolicy:
+              type: Never
+            volumes:
+              - name: "test-volume"
+                hostPath:
+                  path: "/tmp"
+                  type: Directory
+            driver:
+              cores: 1
+              coreLimit: "1200m"
+              memory: "512m"
+              labels:
+                version: 2.4.5
+              serviceAccount: test-spark-op-spark
+              volumeMounts:
+                - name: "test-volume"
+                  mountPath: "/tmp"
+            executor:
+              cores: 1
+              instances: 1
+              memory: "512m"
+              labels:
+                version: 2.4.5
+              volumeMounts:
+                - name: "test-volume"
+                  mountPath: "/tmp"
+    - name: duc    
+      container: 
+        image: alpine:3.7
+        command: [echo, "duc"]
+      
+    - name: spark-flow
+      dag:
+        tasks:
+         - name: mds
+           template: mds
+         - name: bulk-profile-update-importer
+           template: bulk-profile-update-importer
+         - name: spark
+           dependencies: [mds, bulk-profile-update-importer] 
+           template: spark   
+         - name: duc
+           template: duc
+           dependencies: [spark]
+  
